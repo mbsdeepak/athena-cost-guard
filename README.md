@@ -135,6 +135,17 @@ for a budget guard.
 
 ## Changelog
 
+### 0.2.2
+- Bug fix: a CTE named the same as a table it derives from no longer drops that
+  table from the estimate (was collapsing the scan to the 10 MB floor — a silent
+  under-count). CTE aliases are matched only against unqualified references.
+- Bug fix: WHERE predicates are now attributed to the specific table they
+  constrain. Previously only the first WHERE clause was read and predicates were
+  matched by bare column name, so in multi-table queries a filter on one table
+  could be pushed onto another (two same-key predicates could AND to zero
+  partitions). Predicates that can't be unambiguously attributed are dropped,
+  which only widens the estimate.
+
 ### 0.2.1
 - Docs only: refreshed README with the `[parquet]`-extra note and the Athena
   ground-truth validation table. No code changes.
