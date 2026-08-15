@@ -69,7 +69,11 @@ def parse_query(sql: str, dialect: str = "athena") -> ParsedQuery:
     seen = set()
     tables: List[TableRef] = []
     for t in tree.find_all(exp.Table):
-        if t.name.lower() in cte_names:
+        # CTE aliases are always unqualified. Only skip a reference when it's
+        # unqualified *and* matches a CTE name — otherwise a schema-qualified
+        # table (e.g. billing.line_items) that happens to share a CTE's bare
+        # name would be wrongly dropped, zeroing out the estimate.
+        if not t.db and t.name.lower() in cte_names:
             continue
         ref = TableRef(db=t.db or None, name=t.name)
         if ref not in seen:
