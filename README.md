@@ -133,6 +133,24 @@ for a budget guard.
 - **0.3** — CLI (`athena-cost-guard "SELECT ..."`), time-window partition pruning
   (literal date bounds), partition-projection support, Iceberg awareness.
 
+## Changelog
+
+### 0.2.1
+- Docs only: refreshed README with the `[parquet]`-extra note and the Athena
+  ground-truth validation table. No code changes.
+
+### 0.2.0
+- Tier-2 column-aware estimates (`sample_columns=True`): reads Parquet footers
+  (ranged S3 GETs) and scales the byte total by the fraction of referenced
+  columns, turning the upper bound into a tight `~` estimate.
+- New optional `[parquet]` extra (`pyarrow`); the core stays `sqlglot` + `boto3`.
+- Validated against Athena `DataScannedInBytes`: `≤ 16.1 GB` upper bound →
+  `~317 MB` estimate → `295 MB` actual.
+
+### 0.1.0
+- Initial release: Tier-1 upper-bound `estimate()` (SQL parse → Glue partition
+  pruning → S3 sizing → Athena pricing) and the `@cost_guard` budget decorator.
+
 ## Development
 
 ```bash

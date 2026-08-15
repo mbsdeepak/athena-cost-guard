@@ -33,7 +33,7 @@ from .parser import ParsedQuery, Predicate, TableRef, parse_query
 from .pricing import DEFAULT_PRICE_PER_TB, billable_bytes, cost_usd, price_for_region
 from .sizing import S3Sizer
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 __all__ = [
     "estimate",
