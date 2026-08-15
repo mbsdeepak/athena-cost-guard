@@ -64,6 +64,14 @@ pip install athena-cost-guard
 pip install "athena-cost-guard[parquet]"
 ```
 
+> **Note on the `[parquet]` extra:** the base install is intentionally
+> dependency-light (`sqlglot` + `boto3`) and covers Tier-1 estimates and
+> `@cost_guard`. Column-aware Tier-2 estimates (`sample_columns=True`) read
+> Parquet footers via [`pyarrow`](https://arrow.apache.org/docs/python/), which
+> only ships with the `[parquet]` extra. Without it, calling
+> `estimate(..., sample_columns=True)` raises an `ImportError` pointing you to
+> `pip install "athena-cost-guard[parquet]"` — the core estimator keeps working.
+
 Requires AWS credentials with `glue:GetTable`, `glue:GetPartitions`, and
 `s3:ListBucket` on the relevant tables/buckets (standard boto3 resolution:
 env vars, shared config, or instance role).
