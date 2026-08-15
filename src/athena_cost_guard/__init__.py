@@ -181,7 +181,7 @@ def estimate(
             pruned = False
         elif meta.partition_keys:
             locations, count, pruned = catalog.matching_partitions(
-                meta, parsed.predicates
+                meta, parsed.predicates_for(ref)
             )
             partitions_matched += count
         else:
