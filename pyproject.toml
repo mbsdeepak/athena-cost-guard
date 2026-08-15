@@ -1,0 +1,35 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "athena-cost-guard"
+version = "0.1.0"
+description = "Estimate what an AWS Athena query will scan and cost before you run it — and block queries over budget."
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+authors = [{ name = "mbsdeepak", email = "mbsdeepak3@gmail.com" }]
+keywords = ["aws", "athena", "cost", "finops", "glue", "s3", "sql", "budget"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Database",
+    "Topic :: System :: Monitoring",
+]
+dependencies = [
+    "sqlglot>=20",
+    "boto3>=1.26",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7", "build", "twine"]
+
+[project.urls]
+Homepage = "https://github.com/mbsdeepak/athena-cost-guard"
+Issues = "https://github.com/mbsdeepak/athena-cost-guard/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/athena_cost_guard"]
