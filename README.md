@@ -1,6 +1,12 @@
 # athena-cost-guard
 
+[![PyPI](https://img.shields.io/pypi/v/athena-cost-guard.svg)](https://pypi.org/project/athena-cost-guard/)
+[![Python](https://img.shields.io/pypi/pyversions/athena-cost-guard.svg)](https://pypi.org/project/athena-cost-guard/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 **Estimate what an AWS Athena query will scan and cost — *before* you run it — and block queries that blow your budget.**
+
+Available on PyPI: `pip install athena-cost-guard`
 
 Athena bills by the volume of data scanned from S3 (~$5/TB). Unlike BigQuery,
 it has no built-in dry-run, so it's easy to fire off one unpartitioned `SELECT *`
