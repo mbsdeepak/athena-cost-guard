@@ -61,3 +61,13 @@ def test_cte_names_not_treated_as_tables():
         "WITH recent AS (SELECT * FROM db.raw) SELECT * FROM recent"
     )
     assert [t.name for t in p.tables] == ["raw"]
+
+
+def test_cte_shadowing_real_table_keeps_qualified_table():
+    # A CTE named the same as the real table it derives from must NOT cause the
+    # schema-qualified table to be dropped — that would zero out the estimate.
+    p = parse_query(
+        "WITH line_items AS (SELECT id FROM billing.line_items WHERE dt = '2026-08') "
+        "SELECT * FROM line_items"
+    )
+    assert [(t.db, t.name) for t in p.tables] == [("billing", "line_items")]
