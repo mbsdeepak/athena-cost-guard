@@ -28,11 +28,12 @@ from functools import wraps
 from typing import Callable, List, Optional, Union
 
 from .catalog import GlueCatalog, TableMeta
+from .parquet import sample_referenced_fraction
 from .parser import ParsedQuery, Predicate, TableRef, parse_query
 from .pricing import DEFAULT_PRICE_PER_TB, billable_bytes, cost_usd, price_for_region
 from .sizing import S3Sizer
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "estimate",
@@ -68,13 +69,16 @@ class Estimate:
     region: Optional[str]
     price_per_tb: float
     warnings: List[str] = field(default_factory=list)
+    # Tier-2 (column-aware) details; defaults keep Tier-1 results unchanged.
+    sampled_files: int = 0
+    column_fraction: Optional[float] = None
 
     @property
     def human_bytes(self) -> str:
         return _human_bytes(self.bytes_scanned)
 
     def summary(self) -> str:
-        bound = "≤ " if self.is_upper_bound else ""
+        bound = "≤ " if self.is_upper_bound else "~"
         lines = [
             f"tables:            {', '.join(self.tables)}",
             f"partitions matched: {self.partitions_matched}"
@@ -83,6 +87,11 @@ class Estimate:
             f"estimated cost:    {bound}${self.cost_usd:.4f}"
             f"  (@ ${self.price_per_tb:.2f}/TB)",
         ]
+        if self.column_fraction is not None:
+            lines.append(
+                f"column-aware:      {self.column_fraction:.0%} of bytes referenced"
+                f"  (from {self.sampled_files} sampled Parquet footer(s))"
+            )
         for w in self.warnings:
             lines.append(f"warning:           {w}")
         return "\n".join(lines)
@@ -114,6 +123,8 @@ def estimate(
     database: Optional[str] = None,
     region: Optional[str] = None,
     price_per_tb: Optional[float] = None,
+    sample_columns: bool = False,
+    sample_size: int = 8,
     glue_client=None,
     s3_client=None,
     catalog: Optional[GlueCatalog] = None,
@@ -126,15 +137,28 @@ def estimate(
     the SQL. ``catalog`` / ``sizer`` may be injected (used in tests or to reuse
     configured clients); otherwise they're built from ``glue_client`` /
     ``s3_client`` or default boto3 clients.
+
+    Tier-1 (the default) returns an upper bound: all columns in the matched
+    partitions are assumed read. Pass ``sample_columns=True`` for the Tier-2,
+    column-aware estimate — it reads the footers of up to ``sample_size`` Parquet
+    files per table and scales the byte count by the fraction the query's
+    referenced columns occupy. Tier-2 requires the optional ``pyarrow`` extra
+    (``pip install "athena-cost-guard[parquet]"``).
     """
     parsed = parse_query(sql, dialect=dialect)
     catalog = catalog or GlueCatalog(glue_client, region)
     sizer = sizer or S3Sizer(s3_client, region)
 
+    referenced_lower = {c.lower() for c in parsed.columns}
+    can_narrow = sample_columns and not parsed.select_star and bool(referenced_lower)
+
     warnings: List[str] = []
-    total_bytes = 0
+    total_bytes = 0  # raw Tier-1 bytes (upper bound)
+    effective_bytes = 0  # after column-aware scaling, where it applied
     partitions_matched = 0
     pruned_any = False
+    used_sampling = False
+    sampled_files = 0
     table_labels: List[str] = []
 
     for ref in parsed.tables:
@@ -165,26 +189,57 @@ def estimate(
             pruned = False
 
         pruned_any = pruned_any or pruned
-        total_bytes += sizer.size_all(locations)
+
+        objects = sizer.list_objects(locations)
+        table_total = sum(size for _, _, size in objects)
+        total_bytes += table_total
+        table_effective = table_total
+
+        if can_narrow:
+            parquet_objs = [o for o in objects if o[1].lower().endswith(".parquet")]
+            if parquet_objs:
+                fraction, n = sample_referenced_fraction(
+                    sizer.client, parquet_objs, referenced_lower, sample_size
+                )
+                if fraction is not None:
+                    table_effective = round(table_total * fraction)
+                    sampled_files += n
+                    used_sampling = True
+
+        effective_bytes += table_effective
 
     if parsed.select_star:
         warnings.append(
             "query selects all columns; column-level narrowing cannot reduce "
             "this estimate."
         )
+    elif sample_columns and not used_sampling:
+        warnings.append(
+            "column sampling requested but not applied (no Parquet files or no "
+            "readable footers); returning the Tier-1 upper bound."
+        )
+
+    if used_sampling:
+        final_bytes = effective_bytes
+        column_fraction = (effective_bytes / total_bytes) if total_bytes else None
+    else:
+        final_bytes = total_bytes
+        column_fraction = None
 
     rate = price_per_tb if price_per_tb is not None else price_for_region(region)
 
     return Estimate(
-        bytes_scanned=total_bytes,
-        cost_usd=cost_usd(total_bytes, rate),
+        bytes_scanned=final_bytes,
+        cost_usd=cost_usd(final_bytes, rate),
         partitions_matched=partitions_matched,
         tables=table_labels,
-        is_upper_bound=True,  # Tier-1 always assumes all columns are read
+        is_upper_bound=not used_sampling,
         pruned=pruned_any,
         region=region,
         price_per_tb=rate,
         warnings=warnings,
+        sampled_files=sampled_files,
+        column_fraction=column_fraction,
     )
 
 

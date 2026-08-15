@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "athena-cost-guard"
-version = "0.1.0"
+version = "0.2.0"
 description = "Estimate what an AWS Athena query will scan and cost before you run it — and block queries over budget."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -25,7 +25,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7", "build", "twine"]
+# Column-aware (Tier-2) estimates read Parquet footers via pyarrow.
+parquet = ["pyarrow>=10"]
+dev = ["pytest>=7", "pyarrow>=10", "build", "twine"]
 
 [project.urls]
 Homepage = "https://github.com/mbsdeepak/athena-cost-guard"

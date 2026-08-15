@@ -59,35 +59,57 @@ except BudgetExceeded as e:
 
 ```bash
 pip install athena-cost-guard
+
+# for column-aware (Tier-2) estimates, add the parquet extra:
+pip install "athena-cost-guard[parquet]"
 ```
 
 Requires AWS credentials with `glue:GetTable`, `glue:GetPartitions`, and
 `s3:ListBucket` on the relevant tables/buckets (standard boto3 resolution:
 env vars, shared config, or instance role).
 
+## Column-aware estimates (Tier-2)
+
+By default (`sample_columns=False`) you get the **Tier-1 upper bound**: every
+column in the matched partitions is assumed read. But Athena on Parquet only
+scans the columns a query references, so pass `sample_columns=True` for a tight,
+column-aware figure:
+
+```python
+est = estimate(
+    "SELECT servicename, SUM(billedcost) FROM billing.line_items WHERE dt = '2026-08' GROUP BY 1",
+    region="us-east-1",
+    sample_columns=True,      # needs the [parquet] extra
+)
+print(est.summary())
+# bytes scanned:     ~1.4 GB          <- was ≤ 16.1 GB as a Tier-1 upper bound
+# estimated cost:    ~$0.0072
+# column-aware:      9% of bytes referenced  (from 4 sampled Parquet footer(s))
+```
+
+How it works: it reads the **footers** of up to `sample_size` (default 8) of the
+largest Parquet files in the matched partitions — via ranged S3 GETs, never
+downloading whole files — sums the compressed size of the columns the query
+references, and scales the byte total by that fraction. The result is an
+*estimate* (`~`), not an upper bound (`≤`). Falls back to the Tier-1 upper bound
+for `SELECT *`, non-Parquet data, or unreadable footers (with a warning — never
+silently wrong).
+
 ## Accuracy: read this
-
-Tier-1 estimates (the current release) are a deliberate **upper bound**: they
-assume every column in the matched partitions is read. For columnar formats
-(Parquet/ORC) a query that selects a few columns will scan **less** than this
-number — so treat the estimate as "you will not scan more than X." That's the
-safe direction for a budget guard.
-
-Known limitations, all handled gracefully (never silently wrong):
 
 | Situation | Behaviour |
 |---|---|
-| Column projection (Parquet/ORC selects fewer columns) | Not yet modelled → estimate is an upper bound |
+| Column projection, `sample_columns=True` (Parquet) | **Modelled** — tight column-aware estimate from footer sampling |
+| Column projection, default | Upper bound (all columns assumed read) |
 | Partition projection tables (no Glue partitions) | Warns, sizes the table root (wide upper bound) |
 | `OR` / function predicates on partition keys | Not pushed down → those partitions are included |
 | Iceberg / row-group stats pruning | Not modelled → upper bound |
 
 ## Roadmap
 
-- **0.2** — Tier-2 column-aware estimates via Parquet footer sampling (tighten
-  columnar queries to a realistic figure, not just an upper bound).
-- **0.3** — CLI (`athena-cost-guard "SELECT ..."`), partition-projection
-  support, Iceberg awareness.
+- **0.2** — ✅ Tier-2 column-aware estimates via Parquet footer sampling.
+- **0.3** — CLI (`athena-cost-guard "SELECT ..."`), time-window partition pruning
+  (literal date bounds), partition-projection support, Iceberg awareness.
 
 ## Development
 

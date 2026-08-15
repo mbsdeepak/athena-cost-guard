@@ -1,6 +1,7 @@
 """End-to-end estimate/guard tests using injected fakes — no AWS, no boto3."""
 import pytest
 
+import athena_cost_guard as acg
 from athena_cost_guard import BudgetExceeded, Estimate, cost_guard, estimate
 from athena_cost_guard.catalog import TableMeta
 
@@ -28,13 +29,25 @@ class FakeCatalog:
 
 
 class FakeSizer:
-    """Duck-types S3Sizer with a fixed bytes-per-prefix map."""
+    """Duck-types S3Sizer: one synthetic .parquet object per prefix."""
 
-    def __init__(self, sizes):
-        self._sizes = sizes
+    def __init__(self, sizes, client=None):
+        self._sizes = sizes  # {prefix_without_trailing_slash: bytes}
+        self.client = client
+
+    def list_objects(self, uris):
+        seen = set()
+        out = []
+        for uri in uris:
+            key = uri.rstrip("/")
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(("bucket", key + "/part-0.parquet", self._sizes.get(key, 0)))
+        return out
 
     def size_all(self, uris):
-        return sum(self._sizes.get(u.rstrip("/"), 0) for u in uris)
+        return sum(size for _, _, size in self.list_objects(uris))
 
 
 def _partitioned_meta():
@@ -165,3 +178,61 @@ def test_cost_guard_allows_under_budget():
         return "ran"
 
     assert run("SELECT id FROM billing.line_items WHERE dt = '2026-08'") == "ran"
+
+
+# --- Tier-2 (column-aware) -------------------------------------------------
+
+
+def test_column_aware_scales_bytes_by_fraction(monkeypatch):
+    catalog = FakeCatalog(_partitioned_meta(), ["s3://bucket/line_items/dt=2026-08/"])
+    sizer = FakeSizer({"s3://bucket/line_items/dt=2026-08": 1 * 10 ** 12})  # 1 TB
+    # Pretend the referenced columns occupy 25% of on-disk bytes (3 files read).
+    monkeypatch.setattr(acg, "sample_referenced_fraction", lambda *a, **k: (0.25, 3))
+    est = estimate(
+        "SELECT id FROM billing.line_items WHERE dt = '2026-08'",
+        sample_columns=True,
+        catalog=catalog,
+        sizer=sizer,
+    )
+    assert est.is_upper_bound is False
+    assert est.bytes_scanned == 250 * 10 ** 9
+    assert est.sampled_files == 3
+    assert round(est.column_fraction, 3) == 0.25
+    assert round(est.cost_usd, 4) == 1.25  # 0.25 TB * $5/TB
+
+
+def test_column_aware_falls_back_when_no_footer(monkeypatch):
+    catalog = FakeCatalog(_partitioned_meta(), ["s3://bucket/line_items/dt=2026-08/"])
+    sizer = FakeSizer({"s3://bucket/line_items/dt=2026-08": 1 * 10 ** 12})
+    monkeypatch.setattr(acg, "sample_referenced_fraction", lambda *a, **k: (None, 0))
+    est = estimate(
+        "SELECT id FROM billing.line_items WHERE dt = '2026-08'",
+        sample_columns=True,
+        catalog=catalog,
+        sizer=sizer,
+    )
+    assert est.is_upper_bound is True
+    assert est.bytes_scanned == 1 * 10 ** 12
+    assert est.column_fraction is None
+    assert any("column sampling requested" in w for w in est.warnings)
+
+
+def test_select_star_skips_sampling(monkeypatch):
+    catalog = FakeCatalog(_partitioned_meta(), ["s3://bucket/line_items/dt=2026-08/"])
+    sizer = FakeSizer({"s3://bucket/line_items/dt=2026-08": 1 * 10 ** 12})
+    called = {"n": 0}
+
+    def spy(*a, **k):
+        called["n"] += 1
+        return (0.1, 1)
+
+    monkeypatch.setattr(acg, "sample_referenced_fraction", spy)
+    est = estimate(
+        "SELECT * FROM billing.line_items WHERE dt = '2026-08'",
+        sample_columns=True,
+        catalog=catalog,
+        sizer=sizer,
+    )
+    assert called["n"] == 0  # SELECT * can't narrow, so no footers are read
+    assert est.is_upper_bound is True
+    assert est.bytes_scanned == 1 * 10 ** 12
