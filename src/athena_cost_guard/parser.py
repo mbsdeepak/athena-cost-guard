@@ -206,6 +206,23 @@ def _walk_and(node: exp.Expression, atoms: List[Tuple[Predicate, str]]) -> None:
         atoms.append(atom)
 
 
+def _literal_value(node: exp.Expression) -> Optional[str]:
+    """The string value of a literal, unwrapping a typed cast.
+
+    Athena writes typed literals as a cast over a string: ``DATE '2026-09-01'``
+    and ``CAST('2026-09-01' AS DATE)`` both parse to ``Cast(Literal, to=DATE)``.
+    Partition keys are frequently typed (``date``/``int``), so a filter like
+    ``month IN (DATE '2026-09-01')`` must yield the value ``'2026-09-01'`` to be
+    pushable at all. Returns ``None`` for anything that isn't a plain literal or
+    a cast over one (e.g. a function call), which is then left un-pushed.
+    """
+    if isinstance(node, exp.Literal):
+        return node.this
+    if isinstance(node, exp.Cast) and isinstance(node.this, exp.Literal):
+        return node.this.this
+    return None
+
+
 def _atom(node: exp.Expression) -> Optional[Tuple[Predicate, str]]:
     """Return ``(predicate, column_qualifier)`` for a pushable atom, else None.
 
@@ -217,30 +234,29 @@ def _atom(node: exp.Expression) -> Optional[Tuple[Predicate, str]]:
     for cls, op in _COMPARE.items():
         if isinstance(node, cls):
             col, lit = node.left, node.right
-            if isinstance(col, exp.Column) and isinstance(lit, exp.Literal):
-                return Predicate(col.name, op, [lit.this]), col.table
+            lit_val = _literal_value(lit)
+            if isinstance(col, exp.Column) and lit_val is not None:
+                return Predicate(col.name, op, [lit_val]), col.table
             # Literal on the left: flip it (5 < x  ->  x > 5)
-            if isinstance(lit, exp.Column) and isinstance(col, exp.Literal):
+            col_val = _literal_value(col)
+            if isinstance(lit, exp.Column) and col_val is not None:
                 flipped = {">": "<", "<": ">", ">=": "<=", "<=": ">="}.get(op, op)
-                return Predicate(lit.name, flipped, [col.this]), lit.table
+                return Predicate(lit.name, flipped, [col_val]), lit.table
             return None
 
     if isinstance(node, exp.In):
         col = node.this
-        vals = [e.this for e in node.expressions if isinstance(e, exp.Literal)]
-        if isinstance(col, exp.Column) and vals and len(vals) == len(node.expressions):
+        vals = [_literal_value(e) for e in node.expressions]
+        if isinstance(col, exp.Column) and vals and all(v is not None for v in vals):
             return Predicate(col.name, "IN", vals), col.table
         return None
 
     if isinstance(node, exp.Between):
         col = node.this
-        low, high = node.args.get("low"), node.args.get("high")
-        if (
-            isinstance(col, exp.Column)
-            and isinstance(low, exp.Literal)
-            and isinstance(high, exp.Literal)
-        ):
-            return Predicate(col.name, "BETWEEN", [low.this, high.this]), col.table
+        low_val = _literal_value(node.args.get("low"))
+        high_val = _literal_value(node.args.get("high"))
+        if isinstance(col, exp.Column) and low_val is not None and high_val is not None:
+            return Predicate(col.name, "BETWEEN", [low_val, high_val]), col.table
         return None
 
     return None

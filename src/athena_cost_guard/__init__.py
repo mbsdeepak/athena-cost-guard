@@ -172,13 +172,19 @@ def estimate(
         meta = catalog.get_table(db, ref.name)
 
         if meta.projected:
-            warnings.append(
-                f"{ref.name}: uses partition projection — Glue has no partition "
-                f"metadata, so pruning is skipped and the table root is sized "
-                f"(wide upper bound)."
-            )
-            locations = [meta.location]
-            pruned = False
+            prune = getattr(catalog, "projected_partitions", None)
+            projected = prune(meta, parsed.predicates_for(ref)) if prune else None
+            if projected is not None:
+                locations, count, pruned = projected
+                partitions_matched += count
+            else:
+                warnings.append(
+                    f"{ref.name}: uses partition projection but no predicate "
+                    f"narrows it (or its config can't be enumerated), so the "
+                    f"table root is sized (wide upper bound)."
+                )
+                locations = [meta.location]
+                pruned = False
         elif meta.partition_keys:
             locations, count, pruned = catalog.matching_partitions(
                 meta, parsed.predicates_for(ref)

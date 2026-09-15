@@ -6,10 +6,11 @@ pricing, tests) has no hard dependency on AWS credentials.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Tuple
 
 from .parser import Predicate
+from .projection import ProjectionSpec, parse_projection, projected_locations
 
 
 @dataclass
@@ -20,6 +21,10 @@ class TableMeta:
     input_format: str
     partition_keys: List[str]
     projected: bool  # True if the table uses Athena partition projection
+    # Parsed projection config (when ``projected``), used to prune projected
+    # tables the way Glue partitions are pruned for ordinary tables.
+    projection: Optional[Dict[str, ProjectionSpec]] = None
+    location_template: Optional[str] = None
 
 
 def _to_glue_expr(pred: Predicate) -> str:
@@ -52,14 +57,45 @@ class GlueCatalog:
         sd = table["StorageDescriptor"]
         params = table.get("Parameters", {}) or {}
         projected = str(params.get("projection.enabled", "false")).lower() == "true"
+        partition_keys = [k["Name"] for k in table.get("PartitionKeys", [])]
+        specs, template = (
+            parse_projection(params, partition_keys) if projected else (None, None)
+        )
         return TableMeta(
             db=db,
             name=name,
             location=sd["Location"],
             input_format=sd.get("InputFormat", ""),
-            partition_keys=[k["Name"] for k in table.get("PartitionKeys", [])],
+            partition_keys=partition_keys,
             projected=projected,
+            projection=specs,
+            location_template=template,
         )
+
+    def projected_partitions(
+        self, table: TableMeta, predicates: List[Predicate]
+    ) -> Optional[Tuple[List[str], int, bool]]:
+        """Prune a projection table to ``(s3_locations, count, pruned)``.
+
+        Returns ``None`` when projection pruning isn't possible (config can't be
+        enumerated, nothing narrows, or the cross-product is too large) — the
+        caller then sizes the table root as before. Needs no AWS calls: the whole
+        computation is driven by the table properties already read in
+        :meth:`get_table`.
+        """
+        if not table.projection:
+            return None
+        result = projected_locations(
+            table.projection,
+            table.location_template,
+            table.partition_keys,
+            table.location,
+            predicates,
+        )
+        if result is None:
+            return None
+        locations, pruned = result
+        return locations, len(locations), pruned
 
     def matching_partitions(
         self, table: TableMeta, predicates: List[Predicate]
