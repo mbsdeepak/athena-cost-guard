@@ -29,6 +29,9 @@ dependencies = [
 parquet = ["pyarrow>=10"]
 dev = ["pytest>=7", "pyarrow>=10", "build", "twine"]
 
+[project.scripts]
+athena-cost-guard = "athena_cost_guard.cli:main"
+
 [project.urls]
 Homepage = "https://github.com/mbsdeepak/athena-cost-guard"
 Issues = "https://github.com/mbsdeepak/athena-cost-guard/issues"
